@@ -113,7 +113,7 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-if __name__ == "__main__":
+def main():
     import stable_baselines3 as sb3
 
     if sb3.__version__ < "2.0":
@@ -272,6 +272,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             run_name=f"{run_name}-eval",
             Model=QNetwork,
             epsilon=0.05,
+            capture_video=args.capture_video,
         )
         for idx, episodic_return in enumerate(episodic_returns):
             writer.add_scalar("eval/episodic_return", episodic_return, idx)
@@ -283,5 +284,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
             push_to_hub(args, episodic_returns, repo_id, "DQN", f"runs/{run_name}", f"videos/{run_name}-eval")
 
+
     envs.close()
     writer.close()
+
+
+if __name__ == "__main__":
+    main()
