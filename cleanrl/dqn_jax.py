@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from flax.training.train_state import TrainState
-from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common.buffers import DictReplayBuffer, ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -170,7 +170,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     # This step is not necessary as init called on same observation and key will always lead to same initializations
     q_state = q_state.replace(target_params=optax.incremental_update(q_state.params, q_state.target_params, 1))
 
-    rb = ReplayBuffer(
+    rb_ctor = DictReplayBuffer if isinstance(envs.single_observation_space, dict) else ReplayBuffer
+    rb = rb_ctor(
         args.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
@@ -201,7 +202,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # ALGO LOGIC: put action logic here
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
         if random.random() < epsilon:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+            if isinstance(obs, dict) and ("legal_actions" in obs):
+                action_probs = obs["legal_actions"].astype(float)
+                action_probs /= np.sum(action_probs)
+                possible_actions = np.arange(obs["legal_actions"].shape[1])
+                actions = np.array([np.random.choice(possible_actions, p=p) for p in action_probs])
+            else:
+                actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
         else:
             q_values = q_network.apply(q_state.params, obs)
             actions = q_values.argmax(axis=-1)
@@ -223,12 +230,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
+        # for idx, d in enumerate(truncated | terminated):
         for idx, d in enumerate(truncated):
             if d:
                 real_next_obs[idx] = infos["final_observation"][idx]
         rb.add(obs, real_next_obs, actions, rewards, terminated, infos)
-
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
         # ALGO LOGIC: training.
@@ -236,14 +242,24 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             if global_step % args.train_frequency == 0:
                 data = rb.sample(args.batch_size)
                 # perform a gradient-descent step
-                loss, old_val, q_state = update(
-                    q_state,
-                    data.observations.numpy(),
-                    data.actions.numpy(),
-                    data.next_observations.numpy(),
-                    data.rewards.flatten().numpy(),
-                    data.dones.flatten().numpy(),
-                )
+                if isinstance(data.observations, dict):
+                    loss, old_val, q_state = update(
+                        q_state,
+                        {key: value.numpy() for key, value in data.observations.items()},
+                        data.actions.numpy(),
+                        {key: value.numpy() for key, value in data.next_observations.items()},
+                        data.rewards.flatten().numpy(),
+                        data.dones.flatten().numpy(),
+                    )
+                else:
+                    loss, old_val, q_state = update(
+                        q_state,
+                        data.observations.numpy(),
+                        data.actions.numpy(),
+                        data.next_observations.numpy(),
+                        data.rewards.flatten().numpy(),
+                        data.dones.flatten().numpy(),
+                    )
 
                 if global_step % 100 == 0:
                     writer.add_scalar("losses/td_loss", jax.device_get(loss), global_step)
